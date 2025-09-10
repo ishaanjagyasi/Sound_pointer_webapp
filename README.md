@@ -1,9 +1,8 @@
 
-# Ambisonic Web Controller over OSC
+# Ambisonic Sound Pointer
 
-This project transforms your mobile phone into a wireless OSC controller, perfect for controlling Ambisonic panners, synthesizers, or any other software that accepts OSC messages. It uses your phone's orientation sensors to send Azimuth and Elevation data in real-time.
+This is a webapp specifically made for pointing your sound around in an Ambisonic space by the virtue of the sensors in your mobile device.
 
-The data flows from a web application on your phone, through a Node.js WebSocket bridge, to your computer. `ngrok` is used to create secure public URLs, allowing your phone to connect to your computer from anywhere.
 
 ## Prerequisites
 
