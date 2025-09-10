@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ambisonic Phone Controller</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            -webkit-user-select: none; /* Safari */
+            -ms-user-select: none; /* IE 10+ */
+            user-select: none; /* Standard syntax */
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        
+        h1 { margin: 0 0 20px 0; font-size: 1.8em; }
+        
+        .status { padding: 15px; border-radius: 8px; margin: 15px 0; font-weight: bold; }
+        .status.disconnected { background: rgba(255, 0, 0, 0.3); }
+        .status.connected { background: rgba(0, 255, 0, 0.3); }
+        
+        .controls { margin: 20px 0; display: flex; flex-wrap: wrap; justify-content: center; }
+        
+        button {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a52);
+            border: none;
+            color: white;
+            padding: 15px 30px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 5px;
+            transition: transform 0.2s;
+        }
+        button:hover { transform: scale(1.05); }
+        button:disabled { background: #666; cursor: not-allowed; transform: none; }
+
+        .settings { margin: 15px 0; display: flex; justify-content: center; align-items: center; flex-wrap: wrap; }
+        
+        input {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 5px;
+            text-align: center;
+        }
+        
+        .compass-viz {
+            width: 150px;
+            height: 150px;
+            border: 2px solid white;
+            border-radius: 50%;
+            margin: 20px auto;
+            position: relative;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .compass-needle {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 2px;
+            height: 60px;
+            background: #ff6b6b;
+            transform-origin: bottom center;
+            transform: translate(-50%, -100%);
+            transition: transform 0.1s ease;
+        }
+
+        .data-display { margin: 20px 0; text-align: left; }
+        .data-row { display: flex; justify-content: space-between; margin: 10px 0; padding: 10px; background: rgba(255, 255, 255, 0.1); border-radius: 5px; }
+        .checkbox-container { display: flex; align-items: center; justify-content: center; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 Ambisonic Controller</h1>
+        
+        <div id="status" class="status disconnected">Not Connected</div>
+        
+        <div class="settings">
+            <input type="text" id="bridgeUrl" placeholder="Paste wss:// URL here" size="20">
+            <input type="number" id="oscPort" value="9000" style="width: 80px;">
+        </div>
+        
+        <div class="controls">
+            <button id="requestPermission">Enable Sensors</button>
+            <button id="startStop" disabled>Start</button>
+            <button id="setZero" disabled>Set Zero</button>
+        </div>
+        
+        <div class="checkbox-container">
+            <input type="checkbox" id="absoluteMode">
+            <label for="absoluteMode">Absolute Mode</label>
+        </div>
+
+        <div class="compass-viz">
+            <div class="compass-needle" id="needle"></div>
+        </div>
+        
+        <div class="data-display">
+            <div class="data-row"><span>Azimuth (OSC):</span><span id="azimuth">--°</span></div>
+            <div class="data-row"><span>Elevation:</span><span id="elevation">--°</span></div>
+            <div class="data-row"><span>OSC Status:</span><span id="oscStatus">Stopped</span></div>
+        </div>
+    </div>
+
+    <script>
+        class AmbisonicController {
+            constructor() {
+                this.isActive = false;
+                this.websocket = null;
+                this.continuousAzimuth = 0;
+                this.lastAlpha = 0;
+                this.isFirstUpdate = true;
+                this.azimuthOffset = 0;
+                this.absoluteMode = false;
+                this.currentHandler = this.handleOrientation.bind(this);
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+            
+            initializeElements() {
+                this.statusDiv = document.getElementById('status');
+                this.azimuthSpan = document.getElementById('azimuth');
+                this.elevationSpan = document.getElementById('elevation');
+                this.oscStatusSpan = document.getElementById('oscStatus');
+                this.needle = document.getElementById('needle');
+                this.permissionBtn = document.getElementById('requestPermission');
+                this.startStopBtn = document.getElementById('startStop');
+                this.bridgeUrlInput = document.getElementById('bridgeUrl');
+                this.portInput = document.getElementById('oscPort');
+                this.setZeroBtn = document.getElementById('setZero');
+                this.absoluteModeCheckbox = document.getElementById('absoluteMode');
+            }
+            
+            setupEventListeners() {
+                this.permissionBtn.addEventListener('click', () => this.requestPermissions());
+                this.startStopBtn.addEventListener('click', () => this.toggleSending());
+                this.setZeroBtn.addEventListener('click', () => this.setZero());
+                this.absoluteModeCheckbox.addEventListener('change', (e) => this.toggleAbsoluteMode(e.target.checked));
+            }
+            
+            toggleAbsoluteMode(isChecked) {
+                this.absoluteMode = isChecked;
+                if (this.isActive) {
+                    window.removeEventListener('deviceorientation', this.currentHandler);
+                    window.removeEventListener('deviceorientationabsolute', this.currentHandler);
+                    const eventName = this.absoluteMode ? 'deviceorientationabsolute' : 'deviceorientation';
+                    window.addEventListener(eventName, this.currentHandler);
+                }
+            }
+
+            setZero() {
+                this.azimuthOffset = this.continuousAzimuth;
+                if ('vibrate' in navigator) navigator.vibrate(50);
+            }
+
+            async requestPermissions() {
+                try {
+                    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                        const permission = await DeviceOrientationEvent.requestPermission();
+                        if (permission !== 'granted') {
+                            alert('Permission denied for device orientation');
+                            return;
+                        }
+                    }
+                    this.statusDiv.textContent = 'Sensors Ready';
+                    this.statusDiv.className = 'status connected';
+                    this.startStopBtn.disabled = false;
+                    this.setZeroBtn.disabled = false;
+                    this.permissionBtn.textContent = '✓ Sensors Enabled';
+                    this.permissionBtn.disabled = true;
+                } catch (error) {
+                    alert('Failed to request sensor permissions');
+                }
+            }
+            
+            toggleSending() {
+                this.isActive ? this.stopSending() : this.startSending();
+            }
+            
+            startSending() {
+                if (!this.connectWebSocket()) return;
+                this.isActive = true;
+                this.isFirstUpdate = true;
+                this.azimuthOffset = 0;
+                this.startStopBtn.textContent = 'Stop';
+                this.oscStatusSpan.textContent = 'Active';
+                const eventName = this.absoluteMode ? 'deviceorientationabsolute' : 'deviceorientation';
+                window.addEventListener(eventName, this.currentHandler);
+                this.statusDiv.textContent = 'Sending Data';
+                this.statusDiv.className = 'status connected';
+            }
+            
+            stopSending() {
+                this.isActive = false;
+                this.startStopBtn.textContent = 'Start';
+                this.oscStatusSpan.textContent = 'Stopped';
+                if (this.websocket) this.websocket.close();
+                window.removeEventListener('deviceorientation', this.currentHandler);
+                window.removeEventListener('deviceorientationabsolute', this.currentHandler);
+                this.statusDiv.textContent = 'Sensors Ready';
+            }
+            
+            handleOrientation(event) {
+                if (!this.isActive) return;
+                let alpha = event.alpha ?? 0, beta = event.beta ?? 0;
+                
+                if (this.isFirstUpdate) {
+                    this.lastAlpha = alpha;
+                    this.continuousAzimuth = 360 - alpha;
+                    this.isFirstUpdate = false;
+                } else {
+                    let delta = alpha - this.lastAlpha;
+                    if (delta > 180) delta -= 360;
+                    else if (delta < -180) delta += 360;
+                    this.continuousAzimuth -= delta;
+                    this.lastAlpha = alpha;
+                }
+                let calibratedAzimuth = this.continuousAzimuth - this.azimuthOffset;
+                let oscAzimuth = ((calibratedAzimuth % 360) + 540) % 360 - 180;
+                oscAzimuth = -oscAzimuth;
+
+                let elevation = Math.min(90, Math.abs(beta));
+                
+                this.azimuthSpan.textContent = oscAzimuth.toFixed(1) + '°';
+                this.elevationSpan.textContent = elevation.toFixed(1) + '°';
+                this.needle.style.transform = `translate(-50%, -100%) rotate(${calibratedAzimuth}deg)`;
+                
+                this.sendOSC('/StereoEncoder/azimuth', oscAzimuth);
+                this.sendOSC('/StereoEncoder/elevation', elevation);
+            }
+            
+            sendOSC(address, value) {
+                if (this.websocket?.readyState === WebSocket.OPEN) {
+                    const port = parseInt(this.portInput.value, 10);
+                    this.websocket.send(JSON.stringify({
+                        address: address,
+                        value: value,
+                        port: port
+                    }));
+                }
+            }
+
+            connectWebSocket() {
+                const url = this.bridgeUrlInput.value;
+                if (!url || !url.startsWith('wss://')) {
+                    alert('Please paste a valid ngrok wss:// URL.');
+                    return false;
+                }
+                this.websocket = new WebSocket(url);
+                this.websocket.onerror = () => {
+                    alert('Connection failed. Check the URL and bridge.');
+                    this.stopSending();
+                };
+                return true;
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => new AmbisonicController());
+    </script>
+</body>
+</html>
